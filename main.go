@@ -1,7 +1,7 @@
 package main
 
 import (
-	"embed"
+	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -673,7 +673,8 @@ func (g *Game) saveToPath(path string) bool {
 	canvasRect := g.canvasRect()
 	subRect := image.Rect(bounds.Min.X-canvasRect.Min.X, bounds.Min.Y-canvasRect.Min.Y, bounds.Max.X-canvasRect.Min.X, bounds.Max.Y-canvasRect.Min.Y)
 	subImage := g.canvas.SubImage(subRect).(*ebiten.Image)
-	pixels := subImage.ReadPixels()
+	pixels := make([]byte, 4*subRect.Dx()*subRect.Dy())
+	subImage.ReadPixels(pixels)
 	img := image.NewRGBA(image.Rect(0, 0, subRect.Dx(), subRect.Dy()))
 	copy(img.Pix, pixels)
 

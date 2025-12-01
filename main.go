@@ -17,6 +17,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/text"
 	"github.com/hajimehoshi/ebiten/v2/vector"
 	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 )
 
@@ -32,9 +33,6 @@ const (
 	initialCanvasSize = 2048
 	uiHeight          = 110
 )
-
-//go:embed assets/NotoSansSC-Regular.otf
-var fontBytes []byte
 
 var uiFont font.Face
 
@@ -92,9 +90,9 @@ type slider struct {
 }
 
 func initFont() {
-	parsed, err := opentype.Parse(fontBytes)
+	parsed, err := opentype.Parse(goregular.TTF)
 	if err != nil {
-		panic(fmt.Errorf("加载字体失败: %w", err))
+		panic(fmt.Errorf("failed to load font: %w", err))
 	}
 	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{
 		Size:    18,
@@ -102,7 +100,7 @@ func initFont() {
 		Hinting: font.HintingFull,
 	})
 	if err != nil {
-		panic(fmt.Errorf("构建字体失败: %w", err))
+		panic(fmt.Errorf("failed to build font: %w", err))
 	}
 	uiFont = face
 }
@@ -227,8 +225,8 @@ func (c *confirmDialog) draw(dst *ebiten.Image) {
 	noRect := image.Rect(x+dialogW-140, y+90, x+dialogW-40, y+130)
 	vector.DrawFilledRect(dst, float32(yesRect.Min.X), float32(yesRect.Min.Y), float32(yesRect.Dx()), float32(yesRect.Dy()), color.RGBA{70, 120, 70, 255}, false)
 	vector.DrawFilledRect(dst, float32(noRect.Min.X), float32(noRect.Min.Y), float32(noRect.Dx()), float32(noRect.Dy()), color.RGBA{120, 70, 70, 255}, false)
-	drawText(dst, "确认", yesRect.Min.X+36, yesRect.Min.Y+24, color.White)
-	drawText(dst, "取消", noRect.Min.X+36, noRect.Min.Y+24, color.White)
+	drawText(dst, "Confirm", yesRect.Min.X+26, yesRect.Min.Y+24, color.White)
+	drawText(dst, "Cancel", noRect.Min.X+32, noRect.Min.Y+24, color.White)
 }
 
 func (c *confirmDialog) handleInput(mx, my, viewW, viewH int, pressed bool) {
@@ -290,11 +288,11 @@ func NewGame() *Game {
 
 func (g *Game) setupUI() {
 	btns := []*button{
-		{rect: image.Rect(20, 20, 120, 60), label: "画笔", onClick: func() { g.mode = modeDraw }},
-		{rect: image.Rect(140, 20, 260, 60), label: "像素橡皮", onClick: func() { g.mode = modePixelErase }},
-		{rect: image.Rect(260, 20, 380, 60), label: "笔画橡皮", onClick: func() { g.mode = modeStrokeErase }},
-		{rect: image.Rect(400, 20, 520, 60), label: "保存", onClick: func() { g.saveImage() }},
-		{rect: image.Rect(540, 20, 660, 60), label: "清空", onClick: func() { g.confirmClear() }},
+		{rect: image.Rect(20, 20, 120, 60), label: "Brush", onClick: func() { g.mode = modeDraw }},
+		{rect: image.Rect(140, 20, 260, 60), label: "Pixel Eraser", onClick: func() { g.mode = modePixelErase }},
+		{rect: image.Rect(260, 20, 380, 60), label: "Stroke Eraser", onClick: func() { g.mode = modeStrokeErase }},
+		{rect: image.Rect(400, 20, 520, 60), label: "Save", onClick: func() { g.saveImage() }},
+		{rect: image.Rect(540, 20, 660, 60), label: "Clear", onClick: func() { g.confirmClear() }},
 	}
 	g.buttons = btns
 	g.sliders = []*slider{
@@ -590,7 +588,7 @@ func defaultSaveDirectory() string {
 
 func (g *Game) confirmClear() {
 	g.confirm = confirmDialog{
-		message: "确认清空画布吗？",
+		message: "Clear the canvas?",
 		visible: true,
 		onConfirm: func() {
 			g.canvas.Fill(color.Black)
@@ -660,13 +658,13 @@ func (g *Game) saveToPath(path string) bool {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		fmt.Println("创建目录失败:", err)
+		fmt.Println("Failed to create directory:", err)
 		return false
 	}
 
 	bounds, ok := g.drawingBounds()
 	if !ok {
-		fmt.Println("没有内容可保存")
+		fmt.Println("Nothing to save")
 		return false
 	}
 
@@ -680,16 +678,16 @@ func (g *Game) saveToPath(path string) bool {
 
 	f, err := os.Create(path)
 	if err != nil {
-		fmt.Println("保存失败:", err)
+		fmt.Println("Failed to save:", err)
 		return false
 	}
 	defer f.Close()
 	if err := png.Encode(f, img); err != nil {
-		fmt.Println("保存失败:", err)
+		fmt.Println("Failed to save:", err)
 		return false
 	}
 
-	fmt.Println("已保存到", path)
+	fmt.Println("Saved to", path)
 	return true
 }
 
@@ -705,17 +703,17 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	for _, b := range g.buttons {
 		b.draw(screen)
 	}
-	g.sliders[0].draw(screen, "笔粗细")
-	g.sliders[1].draw(screen, "橡皮大小")
+	g.sliders[0].draw(screen, "Brush Size")
+	g.sliders[1].draw(screen, "Eraser Size")
 
-	status := "当前模式: "
+	status := "Mode: "
 	switch g.mode {
 	case modeDraw:
-		status += "画笔"
+		status += "Brush"
 	case modePixelErase:
-		status += "像素橡皮"
+		status += "Pixel Eraser"
 	case modeStrokeErase:
-		status += "笔画橡皮"
+		status += "Stroke Eraser"
 	}
 	drawText(screen, status, 20, uiHeight-20, color.White)
 
@@ -737,13 +735,13 @@ func (g *Game) drawSaveDialog(dst *ebiten.Image) {
 	vector.DrawFilledRect(dst, 0, 0, float32(w), float32(h), color.RGBA{0, 0, 0, 120}, false)
 	vector.DrawFilledRect(dst, float32(x), float32(y), float32(dialogW), float32(dialogH), color.RGBA{30, 30, 30, 255}, false)
 	vector.DrawFilledRect(dst, float32(x), float32(y), float32(dialogW), 48, color.RGBA{50, 50, 50, 255}, false)
-	drawText(dst, "保存图片", x+20, y+32, color.White)
+	drawText(dst, "Save Image", x+20, y+32, color.White)
 
-	drawText(dst, "当前目录:", x+20, y+78, color.White)
+	drawText(dst, "Current Directory:", x+20, y+78, color.White)
 	vector.DrawFilledRect(dst, float32(x+120), float32(y+52), float32(dialogW-140), 36, color.RGBA{20, 20, 20, 255}, false)
 	drawText(dst, g.save.directory, x+130, y+78, color.White)
 
-	drawText(dst, "文件名:", x+20, y+106, color.White)
+	drawText(dst, "Filename:", x+20, y+106, color.White)
 	vector.DrawFilledRect(dst, float32(x+120), float32(y+80), float32(dialogW-140), 36, color.RGBA{20, 20, 20, 255}, false)
 	drawText(dst, g.save.filename, x+130, y+106, color.White)
 
@@ -768,8 +766,8 @@ func (g *Game) drawSaveDialog(dst *ebiten.Image) {
 
 	vector.DrawFilledRect(dst, float32(x+20), float32(y+dialogH-60), 100, 40, color.RGBA{120, 70, 70, 255}, false)
 	vector.DrawFilledRect(dst, float32(x+dialogW-180), float32(y+dialogH-60), 160, 40, color.RGBA{70, 120, 70, 255}, false)
-	drawText(dst, "取消", x+52, y+dialogH-34, color.White)
-	drawText(dst, "保存", x+dialogW-122, y+dialogH-34, color.White)
+	drawText(dst, "Cancel", x+52, y+dialogH-34, color.White)
+	drawText(dst, "Save", x+dialogW-122, y+dialogH-34, color.White)
 }
 
 func distancePointToSegment(p, a, b Vec2) float64 {
@@ -796,7 +794,7 @@ func distancePointToSegment(p, a, b Vec2) float64 {
 func main() {
 	game := NewGame()
 	ebiten.SetWindowSize(1280, 720)
-	ebiten.SetWindowTitle("DraftIt - 无限画布")
+	ebiten.SetWindowTitle("DraftIt - Infinite Canvas")
 	ebiten.SetWindowResizable(true)
 	if err := ebiten.RunGame(game); err != nil {
 		panic(err)

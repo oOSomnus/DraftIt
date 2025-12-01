@@ -268,6 +268,7 @@ type Game struct {
 	camera       vec2d
 	panning      bool
 	panLast      Vec2
+	panRelease   time.Time
 	ignoreInput  bool
 }
 
@@ -368,6 +369,8 @@ func (g *Game) Update() error {
 	mx, my := ebiten.CursorPosition()
 	leftPressed := ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft)
 	rightPressed := ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight)
+	rightJustPressed := inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight)
+	rightJustReleased := inpututil.IsMouseButtonJustReleased(ebiten.MouseButtonRight)
 	justClicked := leftPressed && !g.lastMouseBtn
 	viewW, viewH := ebiten.WindowSize()
 
@@ -391,12 +394,22 @@ func (g *Game) Update() error {
 		return nil
 	}
 
-	return g.handleMainInput(mx, my, viewW, viewH, leftPressed, rightPressed, justClicked)
+	return g.handleMainInput(mx, my, viewW, viewH, leftPressed, rightPressed, rightJustPressed, rightJustReleased, justClicked)
 }
 
-func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPressed, justClicked bool) error {
+func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPressed, rightJustPressed, rightJustReleased, justClicked bool) error {
 
-	if rightPressed {
+	if rightJustPressed {
+		g.panRelease = time.Time{}
+	}
+
+	if rightJustReleased && g.panning {
+		g.panRelease = time.Now().Add(150 * time.Millisecond)
+	}
+
+	effectivePan := rightPressed || (g.panning && time.Now().Before(g.panRelease))
+
+	if effectivePan {
 		if !g.panning {
 			g.panning = true
 			g.panLast = Vec2{X: float32(mx), Y: float32(my)}
@@ -752,6 +765,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 
 	if g.mode == modePixelErase {
+		mx, my := ebiten.CursorPosition()
+		radius := float32(g.eraserSize / 2)
+		vector.StrokeCircle(screen, float32(mx), float32(my), radius, 1, color.RGBA{200, 200, 200, 200}, true)
+	}
+
+	if g.mode == modeStrokeErase {
 		mx, my := ebiten.CursorPosition()
 		radius := float32(g.eraserSize / 2)
 		vector.StrokeCircle(screen, float32(mx), float32(my), radius, 1, color.RGBA{200, 200, 200, 200}, true)

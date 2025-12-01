@@ -268,6 +268,7 @@ type Game struct {
 	camera       vec2d
 	panning      bool
 	panLast      Vec2
+	ignoreInput  bool
 }
 
 func NewGame() *Game {
@@ -369,6 +370,14 @@ func (g *Game) Update() error {
 	rightPressed := ebiten.IsMouseButtonPressed(ebiten.MouseButtonRight)
 	justClicked := leftPressed && !g.lastMouseBtn
 	viewW, viewH := ebiten.WindowSize()
+
+	if g.ignoreInput {
+		g.lastMouseBtn = leftPressed
+		if !leftPressed {
+			g.ignoreInput = false
+		}
+		return nil
+	}
 
 	if g.save.visible {
 		g.handleSaveDialogInput(mx, my, viewW, viewH, justClicked)
@@ -520,9 +529,9 @@ func (g *Game) handleStrokeDrawing(mx, my int, pressed bool, size float64, clr c
 			dx := float64(p.X - last.X)
 			dy := float64(p.Y - last.Y)
 			distance := math.Hypot(dx, dy)
-			step := size / 2
-			if step < 1 {
-				step = 1
+			step := size / 4
+			if step < 0.5 {
+				step = 0.5
 			}
 			steps := int(math.Ceil(distance / step))
 			prev := last
@@ -591,6 +600,9 @@ func (g *Game) drawSegment(a, b Vec2, size float64, clr color.Color) {
 	ca := g.worldToCanvas(a)
 	cb := g.worldToCanvas(b)
 	vector.StrokeLine(g.canvas, ca.X, ca.Y, cb.X, cb.Y, float32(size), clr, true)
+	radius := float32(size / 2)
+	vector.DrawFilledCircle(g.canvas, ca.X, ca.Y, radius, clr, true)
+	vector.DrawFilledCircle(g.canvas, cb.X, cb.Y, radius, clr, true)
 }
 
 func defaultSaveDirectory() string {
@@ -611,8 +623,9 @@ func (g *Game) confirmClear() {
 			g.canvas.Fill(color.Black)
 			g.strokes = []*stroke{}
 			g.current = nil
+			g.ignoreInput = true
 		},
-		onCancel: func() {},
+		onCancel: func() { g.ignoreInput = true },
 	}
 }
 

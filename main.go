@@ -27,6 +27,7 @@ const (
 	modeDraw toolMode = iota
 	modePixelErase
 	modeStrokeErase
+	modeText
 )
 
 const (
@@ -35,6 +36,8 @@ const (
 )
 
 var uiFont font.Face
+var regularFont *opentype.Font
+var faceCache = map[float64]font.Face{}
 
 type Vec2 struct {
 	X float32
@@ -54,6 +57,12 @@ type stroke struct {
 	Erased bool
 }
 
+type textBox struct {
+	Position Vec2
+	Text     string
+	Size     float64
+}
+
 func (s *stroke) expandBounds(p Vec2) {
 	if len(s.Points) == 1 {
 		s.Bounds = image.Rect(int(p.X), int(p.Y), int(p.X), int(p.Y))
@@ -68,12 +77,6 @@ func (s *stroke) hit(pos Vec2, radius float64) bool {
 	}
 
 	hitRadius := radius + s.Size/2
-	pad := int(math.Ceil(hitRadius))
-	inflated := s.Bounds.Inset(-pad)
-	if !rectContainsPoint(inflated, image.Pt(int(pos.X), int(pos.Y))) {
-		return false
-	}
-
 	if len(s.Points) == 1 {
 		dx := float64(pos.X - s.Points[0].X)
 		dy := float64(pos.Y - s.Points[0].Y)
@@ -104,6 +107,7 @@ func initFont() {
 	if err != nil {
 		panic(fmt.Errorf("failed to load font: %w", err))
 	}
+	regularFont = parsed
 	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{
 		Size:    18,
 		DPI:     72,
@@ -120,6 +124,21 @@ func drawText(dst *ebiten.Image, str string, x, y int, clr color.Color) {
 		return
 	}
 	text.Draw(dst, str, uiFont, x, y, clr)
+}
+
+func sizedFont(size float64) font.Face {
+	if face, ok := faceCache[size]; ok {
+		return face
+	}
+	if regularFont == nil {
+		return uiFont
+	}
+	face, err := opentype.NewFace(regularFont, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+	if err != nil {
+		return uiFont
+	}
+	faceCache[size] = face
+	return face
 }
 
 func (s *slider) handleInput(mx, my float64, pressed bool) {
@@ -262,24 +281,40 @@ func (c *confirmDialog) handleInput(mx, my, viewW, viewH int, pressed bool) {
 }
 
 type Game struct {
-	canvas       *ebiten.Image
-	canvasOrigin vec2d
+	canvas        *ebiten.Image
+	canvasOrigin  vec2d
+	strokes       []*stroke
+	current       *stroke
+	currentMode   toolMode
+	mode          toolMode
+	brushSize     float64
+	eraserSize    float64
+	textSize      float64
+	textBoxes     []textBox
+	buttons       []*button
+	sliders       []*slider
+	confirm       confirmDialog
+	save          saveDialog
+	lastMouseBtn  bool
+	camera        vec2d
+	panning       bool
+	panLast       Vec2
+	panRelease    time.Time
+	ignoreInput   bool
+	selectedText  int
+	editingText   int
+	draggingText  bool
+	dragOffset    Vec2
+	undoStack     []drawingState
+	redoStack     []drawingState
+	textSizeDirty bool
+}
+
+type drawingState struct {
 	strokes      []*stroke
-	current      *stroke
-	currentMode  toolMode
-	mode         toolMode
-	brushSize    float64
-	eraserSize   float64
-	buttons      []*button
-	sliders      []*slider
-	confirm      confirmDialog
-	save         saveDialog
-	lastMouseBtn bool
+	textBoxes    []textBox
+	canvasOrigin vec2d
 	camera       vec2d
-	panning      bool
-	panLast      Vec2
-	panRelease   time.Time
-	ignoreInput  bool
 }
 
 func NewGame() *Game {
@@ -292,9 +327,14 @@ func NewGame() *Game {
 		currentMode:  modeDraw,
 		brushSize:    10,
 		eraserSize:   20,
+		textSize:     24,
+		textBoxes:    []textBox{},
+		selectedText: -1,
+		editingText:  -1,
 	}
 	g.canvas.Fill(color.Black)
 	g.setupUI()
+	g.recordState()
 	return g
 }
 
@@ -303,13 +343,15 @@ func (g *Game) setupUI() {
 		{rect: image.Rect(20, 20, 120, 60), label: "Brush", onClick: func() { g.mode = modeDraw }},
 		{rect: image.Rect(140, 20, 260, 60), label: "Pixel Eraser", onClick: func() { g.mode = modePixelErase }},
 		{rect: image.Rect(260, 20, 380, 60), label: "Stroke Eraser", onClick: func() { g.mode = modeStrokeErase }},
-		{rect: image.Rect(400, 20, 520, 60), label: "Save", onClick: func() { g.saveImage() }},
-		{rect: image.Rect(540, 20, 660, 60), label: "Clear", onClick: func() { g.confirmClear() }},
+		{rect: image.Rect(380, 20, 500, 60), label: "Text", onClick: func() { g.mode = modeText }},
+		{rect: image.Rect(520, 20, 640, 60), label: "Save", onClick: func() { g.saveImage() }},
+		{rect: image.Rect(660, 20, 780, 60), label: "Clear", onClick: func() { g.confirmClear() }},
 	}
 	g.buttons = btns
 	g.sliders = []*slider{
-		{x: 700, y: 40, width: 200, min: 2, max: 60, value: &g.brushSize},
-		{x: 950, y: 40, width: 200, min: 4, max: 80, value: &g.eraserSize},
+		{x: 820, y: 40, width: 160, min: 2, max: 60, value: &g.brushSize},
+		{x: 1000, y: 40, width: 160, min: 4, max: 80, value: &g.eraserSize},
+		{x: 1180, y: 40, width: 160, min: 10, max: 80, value: &g.textSize},
 	}
 }
 
@@ -371,6 +413,71 @@ func (g *Game) worldToCanvas(p Vec2) Vec2 {
 	return Vec2{X: p.X - float32(g.canvasOrigin.X), Y: p.Y - float32(g.canvasOrigin.Y)}
 }
 
+func copyStrokes(src []*stroke) []*stroke {
+	out := make([]*stroke, len(src))
+	for i, s := range src {
+		clone := *s
+		clonePoints := make([]Vec2, len(s.Points))
+		copy(clonePoints, s.Points)
+		clone.Points = clonePoints
+		out[i] = &clone
+	}
+	return out
+}
+
+func copyTextBoxes(src []textBox) []textBox {
+	out := make([]textBox, len(src))
+	copy(out, src)
+	return out
+}
+
+func (g *Game) captureState() drawingState {
+	return drawingState{
+		strokes:      copyStrokes(g.strokes),
+		textBoxes:    copyTextBoxes(g.textBoxes),
+		canvasOrigin: g.canvasOrigin,
+		camera:       g.camera,
+	}
+}
+
+func (g *Game) recordState() {
+	g.undoStack = append(g.undoStack, g.captureState())
+	g.redoStack = nil
+}
+
+func (g *Game) applyState(state drawingState) {
+	g.strokes = copyStrokes(state.strokes)
+	g.textBoxes = copyTextBoxes(state.textBoxes)
+	g.canvasOrigin = state.canvasOrigin
+	g.camera = state.camera
+	g.current = nil
+	g.selectedText = -1
+	g.editingText = -1
+	g.draggingText = false
+	g.textSizeDirty = false
+	g.rebuildCanvas()
+}
+
+func (g *Game) undo() {
+	if len(g.undoStack) <= 1 {
+		return
+	}
+	current := g.undoStack[len(g.undoStack)-1]
+	g.undoStack = g.undoStack[:len(g.undoStack)-1]
+	g.redoStack = append(g.redoStack, current)
+	g.applyState(g.undoStack[len(g.undoStack)-1])
+}
+
+func (g *Game) redo() {
+	if len(g.redoStack) == 0 {
+		return
+	}
+	state := g.redoStack[len(g.redoStack)-1]
+	g.redoStack = g.redoStack[:len(g.redoStack)-1]
+	g.undoStack = append(g.undoStack, state)
+	g.applyState(state)
+}
+
 func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 	return outsideWidth, outsideHeight
 }
@@ -409,6 +516,24 @@ func (g *Game) Update() error {
 
 func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPressed, rightJustPressed, rightJustReleased, justClicked bool) error {
 
+	if (ebiten.IsKeyPressed(ebiten.KeyControl) || ebiten.IsKeyPressed(ebiten.KeyMeta)) && inpututil.IsKeyJustPressed(ebiten.KeyZ) {
+		g.undo()
+	}
+	if (ebiten.IsKeyPressed(ebiten.KeyControl) || ebiten.IsKeyPressed(ebiten.KeyMeta)) && inpututil.IsKeyJustPressed(ebiten.KeyR) {
+		g.redo()
+	}
+
+	_, wheelY := ebiten.Wheel()
+	if wheelY != 0 {
+		g.camera.Y -= float64(wheelY * 60)
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+		g.camera.Y -= 8
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowDown) {
+		g.camera.Y += 8
+	}
+
 	if rightJustPressed {
 		g.panRelease = time.Time{}
 	}
@@ -424,9 +549,7 @@ func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPress
 			g.panning = true
 			g.panLast = Vec2{X: float32(mx), Y: float32(my)}
 		} else {
-			dx := float32(mx) - g.panLast.X
 			dy := float32(my) - g.panLast.Y
-			g.camera.X -= float64(dx)
 			g.camera.Y -= float64(dy)
 			g.panLast = Vec2{X: float32(mx), Y: float32(my)}
 		}
@@ -434,8 +557,14 @@ func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPress
 		g.panning = false
 	}
 
+	g.camera.X = 0
+
 	for _, s := range g.sliders {
 		s.handleInput(float64(mx), float64(my), leftPressed)
+	}
+
+	if g.editingText >= 0 {
+		g.handleTextEditing()
 	}
 
 	if justClicked && !g.panning {
@@ -465,6 +594,8 @@ func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPress
 		g.handleStrokeDrawing(mx, my, leftPressed, g.eraserSize, color.Black)
 	case modeStrokeErase:
 		g.handleStrokeErase(mx, my, leftPressed)
+	case modeText:
+		g.handleTextTools(mx, my, leftPressed, justClicked)
 	}
 
 	g.lastMouseBtn = leftPressed
@@ -578,6 +709,7 @@ func (g *Game) handleStrokeDrawing(mx, my int, pressed bool, size float64, clr c
 	} else if g.current != nil && g.currentMode == g.mode {
 		g.strokes = append(g.strokes, g.current)
 		g.current = nil
+		g.recordState()
 	}
 }
 
@@ -596,6 +728,141 @@ func (g *Game) handleStrokeErase(mx, my int, pressed bool) {
 	}
 	if removed {
 		g.rebuildCanvas()
+		g.recordState()
+	}
+}
+
+func (g *Game) textBoxRect(tb textBox) image.Rectangle {
+	face := sizedFont(tb.Size)
+	bounds := text.BoundString(face, tb.Text)
+	width := bounds.Dx() / 64
+	drawer := &font.Drawer{Face: face}
+	measured := drawer.MeasureString(tb.Text).Round()
+	if measured > width {
+		width = measured
+	}
+	metrics := face.Metrics()
+	ascent := metrics.Ascent.Round()
+	descent := metrics.Descent.Round()
+	if width == 0 {
+		width = int(tb.Size)
+	}
+	if ascent+descent == 0 {
+		ascent = int(tb.Size)
+	}
+
+	padding := 6
+	minX := int(tb.Position.X) - padding
+	minY := int(tb.Position.Y) - padding
+	maxX := int(tb.Position.X) + width + padding
+	maxY := int(tb.Position.Y) + ascent + descent + padding
+	return image.Rect(minX, minY, maxX, maxY)
+}
+
+func (g *Game) hitTextBox(pos Vec2) int {
+	p := image.Pt(int(pos.X), int(pos.Y))
+	for i := len(g.textBoxes) - 1; i >= 0; i-- {
+		rect := g.textBoxRect(g.textBoxes[i])
+		if rectContainsPoint(rect, p) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (g *Game) finishTextEditing() {
+	if g.editingText < 0 || g.editingText >= len(g.textBoxes) {
+		g.editingText = -1
+		return
+	}
+	g.editingText = -1
+	g.rebuildCanvas()
+	g.recordState()
+}
+
+func (g *Game) handleTextEditing() {
+	if g.editingText < 0 || g.editingText >= len(g.textBoxes) {
+		return
+	}
+	tb := &g.textBoxes[g.editingText]
+	changed := false
+	chars := ebiten.AppendInputChars(nil)
+	if len(chars) > 0 {
+		tb.Text += string(chars)
+		changed = true
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) && len(tb.Text) > 0 {
+		tb.Text = tb.Text[:len(tb.Text)-1]
+		changed = true
+	}
+	if changed {
+		g.rebuildCanvas()
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		g.finishTextEditing()
+	}
+}
+
+func (g *Game) handleTextTools(mx, my int, leftPressed, justClicked bool) {
+	pos := g.worldFromScreen(mx, my)
+
+	if g.draggingText && !leftPressed {
+		g.draggingText = false
+		g.recordState()
+	}
+
+	if justClicked {
+		if g.editingText >= 0 {
+			g.finishTextEditing()
+		}
+		hit := g.hitTextBox(pos)
+		if hit >= 0 {
+			g.selectedText = hit
+			g.editingText = -1
+			g.draggingText = true
+			g.dragOffset = Vec2{X: pos.X - g.textBoxes[hit].Position.X, Y: pos.Y - g.textBoxes[hit].Position.Y}
+			g.textSize = g.textBoxes[hit].Size
+			g.textSizeDirty = false
+			return
+		}
+		g.selectedText = len(g.textBoxes)
+		g.editingText = len(g.textBoxes)
+		g.textBoxes = append(g.textBoxes, textBox{Position: pos, Text: "", Size: g.textSize})
+		g.draggingText = false
+		g.textSizeDirty = false
+		g.rebuildCanvas()
+		return
+	}
+
+	if g.draggingText && g.selectedText >= 0 && g.selectedText < len(g.textBoxes) && leftPressed {
+		tb := &g.textBoxes[g.selectedText]
+		tb.Position = Vec2{X: pos.X - g.dragOffset.X, Y: pos.Y - g.dragOffset.Y}
+		g.rebuildCanvas()
+	}
+
+	if g.selectedText >= 0 && g.selectedText < len(g.textBoxes) {
+		if g.textBoxes[g.selectedText].Size != g.textSize {
+			g.textBoxes[g.selectedText].Size = g.textSize
+			g.textSizeDirty = true
+			g.rebuildCanvas()
+		}
+		if !g.sliders[2].active && g.textSizeDirty {
+			g.recordState()
+			g.textSizeDirty = false
+		}
+	}
+
+	if g.selectedText >= 0 && inpututil.IsKeyJustPressed(ebiten.KeyDelete) {
+		g.textBoxes = append(g.textBoxes[:g.selectedText], g.textBoxes[g.selectedText+1:]...)
+		g.selectedText = -1
+		g.editingText = -1
+		g.draggingText = false
+		g.rebuildCanvas()
+		g.recordState()
+	}
+
+	if g.selectedText >= 0 && inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		g.editingText = g.selectedText
 	}
 }
 
@@ -617,6 +884,10 @@ func (g *Game) rebuildCanvas() {
 	if g.current != nil && g.currentMode == g.mode {
 		render(g.current)
 	}
+
+	for _, tb := range g.textBoxes {
+		g.drawTextBoxContent(tb)
+	}
 }
 
 func (g *Game) drawSegment(a, b Vec2, size float64, clr color.Color) {
@@ -626,6 +897,13 @@ func (g *Game) drawSegment(a, b Vec2, size float64, clr color.Color) {
 	radius := float32(size / 2)
 	vector.DrawFilledCircle(g.canvas, ca.X, ca.Y, radius, clr, true)
 	vector.DrawFilledCircle(g.canvas, cb.X, cb.Y, radius, clr, true)
+}
+
+func (g *Game) drawTextBoxContent(tb textBox) {
+	face := sizedFont(tb.Size)
+	pos := g.worldToCanvas(tb.Position)
+	ascent := face.Metrics().Ascent.Round()
+	text.Draw(g.canvas, tb.Text, face, int(pos.X), int(pos.Y)+ascent, color.White)
 }
 
 func defaultSaveDirectory() string {
@@ -645,7 +923,9 @@ func (g *Game) confirmClear() {
 		onConfirm: func() {
 			g.canvas.Fill(color.Black)
 			g.strokes = []*stroke{}
+			g.textBoxes = []textBox{}
 			g.current = nil
+			g.recordState()
 			g.ignoreInput = true
 		},
 		onCancel: func() { g.ignoreInput = true },
@@ -686,6 +966,22 @@ func (g *Game) drawingBounds() (image.Rectangle, bool) {
 		}
 	}
 
+	considerText := func(t textBox) {
+		rect := g.textBoxRect(t)
+		if rect.Min.X < minX {
+			minX = rect.Min.X
+		}
+		if rect.Min.Y < minY {
+			minY = rect.Min.Y
+		}
+		if rect.Max.X > maxX {
+			maxX = rect.Max.X
+		}
+		if rect.Max.Y > maxY {
+			maxY = rect.Max.Y
+		}
+	}
+
 	for _, s := range g.strokes {
 		if s.Erased {
 			continue
@@ -695,6 +991,10 @@ func (g *Game) drawingBounds() (image.Rectangle, bool) {
 
 	if g.current != nil && g.currentMode == g.mode {
 		considerStroke(g.current)
+	}
+
+	for _, t := range g.textBoxes {
+		considerText(t)
 	}
 
 	if minX == math.MaxInt32 {
@@ -758,6 +1058,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	g.sliders[0].draw(screen, "Brush Size")
 	g.sliders[1].draw(screen, "Eraser Size")
+	g.sliders[2].draw(screen, "Text Size")
 
 	status := "Mode: "
 	switch g.mode {
@@ -767,6 +1068,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		status += "Pixel Eraser"
 	case modeStrokeErase:
 		status += "Stroke Eraser"
+	case modeText:
+		status += "Text"
 	}
 	drawText(screen, status, 20, uiHeight-20, color.White)
 
@@ -784,6 +1087,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		mx, my := ebiten.CursorPosition()
 		radius := float32(g.eraserSize / 2)
 		vector.StrokeCircle(screen, float32(mx), float32(my), radius, 1, color.RGBA{200, 200, 200, 200}, true)
+	}
+
+	if g.selectedText >= 0 && g.selectedText < len(g.textBoxes) {
+		rect := g.textBoxRect(g.textBoxes[g.selectedText])
+		offsetX := float32(rect.Min.X) - float32(g.camera.X)
+		offsetY := float32(rect.Min.Y) - float32(g.camera.Y)
+		vector.StrokeRect(screen, offsetX, offsetY, float32(rect.Dx()), float32(rect.Dy()), 2, color.RGBA{120, 180, 240, 220}, true)
 	}
 
 	if g.save.visible {

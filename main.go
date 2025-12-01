@@ -30,15 +30,20 @@ const (
 	uiHeight     = 110
 )
 
+type Vec2 struct {
+	X float32
+	Y float32
+}
+
 type stroke struct {
-	Points []ebiten.Vec2
+	Points []Vec2
 	Size   float64
 	Color  color.Color
 	Bounds image.Rectangle
 	Erased bool
 }
 
-func (s *stroke) expandBounds(p ebiten.Vec2) {
+func (s *stroke) expandBounds(p Vec2) {
 	if len(s.Points) == 1 {
 		s.Bounds = image.Rect(int(p.X), int(p.Y), int(p.X), int(p.Y))
 	} else {
@@ -46,12 +51,12 @@ func (s *stroke) expandBounds(p ebiten.Vec2) {
 	}
 }
 
-func (s *stroke) hit(pos ebiten.Vec2, tolerance float64) bool {
+func (s *stroke) hit(pos Vec2, tolerance float64) bool {
 	if s.Erased {
 		return false
 	}
 	inflated := s.Bounds.Inset(-int(tolerance) - int(s.Size))
-	if !inflated.Contains(image.Pt(int(pos.X), int(pos.Y))) {
+	if !rectContainsPoint(inflated, image.Pt(int(pos.X), int(pos.Y))) {
 		return false
 	}
 	for i := 0; i < len(s.Points)-1; i++ {
@@ -103,7 +108,7 @@ func (s *slider) draw(dst *ebiten.Image, label string) {
 	vector.DrawFilledRect(dst, float32(s.x), float32(barY-trackHeight/2), float32(s.width), float32(trackHeight), color.RGBA{60, 60, 60, 255}, false)
 	knobRadius := 10.0
 	knobX := s.x + ((*s.value - s.min) / (s.max - s.min) * s.width)
-	vector.DrawFilledCircle(dst, float32(knobX), float32(barY), float32(knobRadius), color.RGBA{200, 200, 200, 255})
+	vector.DrawFilledCircle(dst, float32(knobX), float32(barY), float32(knobRadius), color.RGBA{200, 200, 200, 255}, false)
 	ebitenutil.DebugPrintAt(dst, fmt.Sprintf("%s: %.1f", label, *s.value), int(s.x), int(s.y)-24)
 }
 
@@ -111,6 +116,10 @@ type button struct {
 	rect    image.Rectangle
 	label   string
 	onClick func()
+}
+
+func rectContainsPoint(rect image.Rectangle, p image.Point) bool {
+	return p.X >= rect.Min.X && p.X < rect.Max.X && p.Y >= rect.Min.Y && p.Y < rect.Max.Y
 }
 
 func (b *button) contains(x, y int) bool {
@@ -157,12 +166,12 @@ func (c *confirmDialog) handleInput(mx, my, viewW, viewH int, pressed bool) {
 	y := (viewH - dialogH) / 2
 	yesRect := image.Rect(x+40, y+90, x+140, y+130)
 	noRect := image.Rect(x+dialogW-140, y+90, x+dialogW-40, y+130)
-	if yesRect.Contains(image.Pt(mx, my)) {
+	if rectContainsPoint(yesRect, image.Pt(mx, my)) {
 		c.visible = false
 		if c.onConfirm != nil {
 			c.onConfirm()
 		}
-	} else if noRect.Contains(image.Pt(mx, my)) {
+	} else if rectContainsPoint(noRect, image.Pt(mx, my)) {
 		c.visible = false
 		if c.onCancel != nil {
 			c.onCancel()
@@ -260,9 +269,9 @@ func (g *Game) Update() error {
 
 func (g *Game) handleDrawing(mx, my int, pressed bool) {
 	if pressed {
-		p := ebiten.Vec2{X: float32(mx), Y: float32(my)}
+		p := Vec2{X: float32(mx), Y: float32(my)}
 		if g.current == nil {
-			g.current = &stroke{Points: []ebiten.Vec2{p}, Size: g.brushSize, Color: color.White}
+			g.current = &stroke{Points: []Vec2{p}, Size: g.brushSize, Color: color.White}
 			g.current.expandBounds(p)
 		} else {
 			g.current.Points = append(g.current.Points, p)
@@ -273,7 +282,7 @@ func (g *Game) handleDrawing(mx, my int, pressed bool) {
 			b := g.current.Points[len(g.current.Points)-1]
 			g.drawSegment(a, b, g.brushSize, color.White)
 		} else {
-			vector.DrawFilledCircle(g.canvas, p.X, p.Y, float32(g.brushSize/2), color.White)
+			vector.DrawFilledCircle(g.canvas, p.X, p.Y, float32(g.brushSize/2), color.White, true)
 		}
 	} else if g.current != nil {
 		g.strokes = append(g.strokes, g.current)
@@ -283,7 +292,7 @@ func (g *Game) handleDrawing(mx, my int, pressed bool) {
 
 func (g *Game) handlePixelErase(mx, my int, pressed bool) {
 	if pressed {
-		vector.DrawFilledCircle(g.canvas, float32(mx), float32(my), float32(g.eraserSize/2), color.Black)
+		vector.DrawFilledCircle(g.canvas, float32(mx), float32(my), float32(g.eraserSize/2), color.Black, true)
 	}
 }
 
@@ -291,7 +300,7 @@ func (g *Game) handleStrokeErase(mx, my int, clicked bool) {
 	if !clicked {
 		return
 	}
-	pos := ebiten.Vec2{X: float32(mx), Y: float32(my)}
+	pos := Vec2{X: float32(mx), Y: float32(my)}
 	tolerance := g.eraserSize / 2
 	removed := false
 	for _, s := range g.strokes {
@@ -317,7 +326,7 @@ func (g *Game) rebuildCanvas() {
 	}
 }
 
-func (g *Game) drawSegment(a, b ebiten.Vec2, size float64, clr color.Color) {
+func (g *Game) drawSegment(a, b Vec2, size float64, clr color.Color) {
 	vector.StrokeLine(g.canvas, a.X, a.Y, b.X, b.Y, float32(size), clr, true)
 }
 
@@ -354,7 +363,7 @@ func (g *Game) saveImage() {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	w, h := screen.Size()
+	w, _ := screen.Size()
 	op := &ebiten.DrawImageOptions{}
 	screen.DrawImage(g.canvas, op)
 
@@ -381,7 +390,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 }
 
-func distancePointToSegment(p, a, b ebiten.Vec2) float64 {
+func distancePointToSegment(p, a, b Vec2) float64 {
 	apx := float64(p.X - a.X)
 	apy := float64(p.Y - a.Y)
 	abx := float64(b.X - a.X)

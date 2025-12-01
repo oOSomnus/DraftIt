@@ -282,7 +282,7 @@ func (g *Game) handleDrawing(mx, my int, pressed bool) {
 			b := g.current.Points[len(g.current.Points)-1]
 			g.drawSegment(a, b, g.brushSize, color.White)
 		} else {
-			vector.DrawFilledCircle(g.canvas, p.X, p.Y, float32(g.brushSize/2), color.White)
+			vector.DrawFilledCircle(g.canvas, p.X, p.Y, float32(g.brushSize/2), color.White, true)
 		}
 	} else if g.current != nil {
 		g.strokes = append(g.strokes, g.current)
@@ -292,7 +292,7 @@ func (g *Game) handleDrawing(mx, my int, pressed bool) {
 
 func (g *Game) handlePixelErase(mx, my int, pressed bool) {
 	if pressed {
-		vector.DrawFilledCircle(g.canvas, float32(mx), float32(my), float32(g.eraserSize/2), color.Black)
+		vector.DrawFilledCircle(g.canvas, float32(mx), float32(my), float32(g.eraserSize/2), color.Black, true)
 	}
 }
 
@@ -363,7 +363,7 @@ func (g *Game) saveImage() {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-	w, h := screen.Size()
+	w, _ := screen.Size()
 	op := &ebiten.DrawImageOptions{}
 	screen.DrawImage(g.canvas, op)
 

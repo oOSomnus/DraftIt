@@ -62,18 +62,28 @@ func (s *stroke) expandBounds(p Vec2) {
 	}
 }
 
-func (s *stroke) hit(pos Vec2, tolerance float64) bool {
-	if s.Erased {
+func (s *stroke) hit(pos Vec2, radius float64) bool {
+	if s.Erased || len(s.Points) == 0 {
 		return false
 	}
-	inflated := s.Bounds.Inset(-int(tolerance) - int(s.Size))
+
+	hitRadius := radius + s.Size/2
+	pad := int(math.Ceil(hitRadius))
+	inflated := s.Bounds.Inset(-pad)
 	if !rectContainsPoint(inflated, image.Pt(int(pos.X), int(pos.Y))) {
 		return false
 	}
+
+	if len(s.Points) == 1 {
+		dx := float64(pos.X - s.Points[0].X)
+		dy := float64(pos.Y - s.Points[0].Y)
+		return math.Hypot(dx, dy) <= hitRadius
+	}
+
 	for i := 0; i < len(s.Points)-1; i++ {
 		a := s.Points[i]
 		b := s.Points[i+1]
-		if distancePointToSegment(pos, a, b) <= tolerance+(s.Size/2) {
+		if distancePointToSegment(pos, a, b) <= hitRadius {
 			return true
 		}
 	}

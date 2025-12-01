@@ -2,7 +2,6 @@ package main
 
 import (
 	"embed"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,12 +9,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text"
 	"github.com/hajimehoshi/ebiten/v2/vector"
-	"github.com/sqweek/dialog"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 )
@@ -175,6 +175,43 @@ type confirmDialog struct {
 	onCancel  func()
 }
 
+type fileEntry struct {
+	name string
+	dir  bool
+}
+
+type saveDialog struct {
+	visible   bool
+	directory string
+	filename  string
+	entries   []fileEntry
+}
+
+func (s *saveDialog) loadEntries() {
+	entries := []fileEntry{}
+	if s.directory != "/" {
+		parent := filepath.Dir(s.directory)
+		if parent != s.directory {
+			entries = append(entries, fileEntry{name: "..", dir: true})
+		}
+	}
+
+	files, err := os.ReadDir(s.directory)
+	if err == nil {
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].IsDir() != files[j].IsDir() {
+				return files[i].IsDir()
+			}
+			return files[i].Name() < files[j].Name()
+		})
+		for _, f := range files {
+			entries = append(entries, fileEntry{name: f.Name(), dir: f.IsDir()})
+		}
+	}
+
+	s.entries = entries
+}
+
 func (c *confirmDialog) draw(dst *ebiten.Image) {
 	if !c.visible {
 		return
@@ -228,6 +265,7 @@ type Game struct {
 	buttons      []*button
 	sliders      []*slider
 	confirm      confirmDialog
+	save         saveDialog
 	lastMouseBtn bool
 	camera       vec2d
 	panning      bool
@@ -334,11 +372,22 @@ func (g *Game) Update() error {
 	justClicked := leftPressed && !g.lastMouseBtn
 	viewW, viewH := ebiten.WindowSize()
 
+	if g.save.visible {
+		g.handleSaveDialogInput(mx, my, viewW, viewH, justClicked)
+		g.lastMouseBtn = leftPressed
+		return nil
+	}
+
 	if g.confirm.visible {
 		g.confirm.handleInput(mx, my, viewW, viewH, justClicked)
 		g.lastMouseBtn = leftPressed
 		return nil
 	}
+
+	return g.handleMainInput(mx, my, viewW, viewH, leftPressed, rightPressed, justClicked)
+}
+
+func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPressed, justClicked bool) error {
 
 	if my > uiHeight && rightPressed {
 		if !g.panning {
@@ -390,6 +439,73 @@ func (g *Game) Update() error {
 
 	g.lastMouseBtn = leftPressed
 	return nil
+}
+
+func (g *Game) handleSaveDialogInput(mx, my, viewW, viewH int, justClicked bool) {
+	dialogW, dialogH := 720, 520
+	x := (viewW - dialogW) / 2
+	y := (viewH - dialogH) / 2
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
+		g.save.visible = false
+		return
+	}
+
+	cancelRect := image.Rect(x+20, y+dialogH-60, x+120, y+dialogH-20)
+	saveRect := image.Rect(x+dialogW-180, y+dialogH-60, x+dialogW-20, y+dialogH-20)
+	nameRect := image.Rect(x+120, y+60, x+dialogW-20, y+100)
+	listRect := image.Rect(x+20, y+120, x+dialogW-20, y+dialogH-120)
+	entryHeight := 28
+
+	if justClicked {
+		p := image.Pt(mx, my)
+		switch {
+		case rectContainsPoint(cancelRect, p):
+			g.save.visible = false
+			return
+		case rectContainsPoint(saveRect, p):
+			path := filepath.Join(g.save.directory, g.save.filename)
+			if g.saveToPath(path) {
+				g.save.visible = false
+			}
+			return
+		case rectContainsPoint(listRect, p):
+			idx := (my - listRect.Min.Y) / entryHeight
+			if idx >= 0 && idx < len(g.save.entries) {
+				entry := g.save.entries[idx]
+				if entry.dir {
+					next := filepath.Join(g.save.directory, entry.name)
+					if entry.name == ".." {
+						next = filepath.Dir(g.save.directory)
+					}
+					if info, err := os.Stat(next); err == nil && info.IsDir() {
+						g.save.directory = next
+						g.save.loadEntries()
+					}
+				} else {
+					g.save.filename = entry.name
+				}
+			}
+		case rectContainsPoint(nameRect, p):
+			// keep focus on filename field
+		}
+	}
+
+	chars := ebiten.AppendInputChars(nil)
+	if len(chars) > 0 {
+		g.save.filename += string(chars)
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) && len(g.save.filename) > 0 {
+		g.save.filename = g.save.filename[:len(g.save.filename)-1]
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		path := filepath.Join(g.save.directory, g.save.filename)
+		if g.saveToPath(path) {
+			g.save.visible = false
+		}
+	}
 }
 
 func (g *Game) handleStrokeDrawing(mx, my int, pressed bool, size float64, clr color.Color) {
@@ -462,6 +578,16 @@ func (g *Game) drawSegment(a, b Vec2, size float64, clr color.Color) {
 	vector.StrokeLine(g.canvas, ca.X, ca.Y, cb.X, cb.Y, float32(size), clr, true)
 }
 
+func defaultSaveDirectory() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
+}
+
 func (g *Game) confirmClear() {
 	g.confirm = confirmDialog{
 		message: "确认清空画布吗？",
@@ -477,44 +603,12 @@ func (g *Game) confirmClear() {
 
 func (g *Game) saveImage() {
 	now := time.Now().Format("20060102_150405")
-	suggested := fmt.Sprintf("drawing_%s.png", now)
-	path, err := dialog.File().Title("保存图片").Filter("PNG 图片", "png").SetStartFile(suggested).Save()
-	if err != nil {
-		if errors.Is(err, dialog.ErrCancelled) {
-			return
-		}
-		fmt.Println("保存失败:", err)
-		return
+	g.save = saveDialog{
+		visible:   true,
+		directory: defaultSaveDirectory(),
+		filename:  fmt.Sprintf("drawing_%s.png", now),
 	}
-
-	if filepath.Ext(path) == "" {
-		path += ".png"
-	}
-
-	bounds, ok := g.drawingBounds()
-	if !ok {
-		fmt.Println("没有内容可保存")
-		return
-	}
-
-	canvasRect := g.canvasRect()
-	subRect := image.Rect(bounds.Min.X-canvasRect.Min.X, bounds.Min.Y-canvasRect.Min.Y, bounds.Max.X-canvasRect.Min.X, bounds.Max.Y-canvasRect.Min.Y)
-	subImage := g.canvas.SubImage(subRect).(*ebiten.Image)
-	pixels := subImage.ReadPixels()
-	img := image.NewRGBA(image.Rect(0, 0, subRect.Dx(), subRect.Dy()))
-	copy(img.Pix, pixels)
-
-	f, err := os.Create(path)
-	if err != nil {
-		fmt.Println("保存失败:", err)
-		return
-	}
-	defer f.Close()
-	if err := png.Encode(f, img); err != nil {
-		fmt.Println("保存失败:", err)
-		return
-	}
-	fmt.Println("已保存到", path)
+	g.save.loadEntries()
 }
 
 func (g *Game) drawingBounds() (image.Rectangle, bool) {
@@ -560,6 +654,44 @@ func (g *Game) drawingBounds() (image.Rectangle, bool) {
 	return image.Rect(minX-padding, minY-padding, maxX+padding, maxY+padding), true
 }
 
+func (g *Game) saveToPath(path string) bool {
+	if filepath.Ext(path) == "" {
+		path += ".png"
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Println("创建目录失败:", err)
+		return false
+	}
+
+	bounds, ok := g.drawingBounds()
+	if !ok {
+		fmt.Println("没有内容可保存")
+		return false
+	}
+
+	canvasRect := g.canvasRect()
+	subRect := image.Rect(bounds.Min.X-canvasRect.Min.X, bounds.Min.Y-canvasRect.Min.Y, bounds.Max.X-canvasRect.Min.X, bounds.Max.Y-canvasRect.Min.Y)
+	subImage := g.canvas.SubImage(subRect).(*ebiten.Image)
+	pixels := subImage.ReadPixels()
+	img := image.NewRGBA(image.Rect(0, 0, subRect.Dx(), subRect.Dy()))
+	copy(img.Pix, pixels)
+
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Println("保存失败:", err)
+		return false
+	}
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		fmt.Println("保存失败:", err)
+		return false
+	}
+
+	fmt.Println("已保存到", path)
+	return true
+}
+
 func (g *Game) Draw(screen *ebiten.Image) {
 	w, _ := screen.Size()
 	screen.Fill(color.Black)
@@ -589,6 +721,54 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	if g.confirm.visible {
 		g.confirm.draw(screen)
 	}
+
+	if g.save.visible {
+		g.drawSaveDialog(screen)
+	}
+}
+
+func (g *Game) drawSaveDialog(dst *ebiten.Image) {
+	w, h := dst.Size()
+	dialogW, dialogH := 720, 520
+	x := (w - dialogW) / 2
+	y := (h - dialogH) / 2
+
+	vector.DrawFilledRect(dst, 0, 0, float32(w), float32(h), color.RGBA{0, 0, 0, 120}, false)
+	vector.DrawFilledRect(dst, float32(x), float32(y), float32(dialogW), float32(dialogH), color.RGBA{30, 30, 30, 255}, false)
+	vector.DrawFilledRect(dst, float32(x), float32(y), float32(dialogW), 48, color.RGBA{50, 50, 50, 255}, false)
+	drawText(dst, "保存图片", x+20, y+32, color.White)
+
+	drawText(dst, "当前目录:", x+20, y+78, color.White)
+	vector.DrawFilledRect(dst, float32(x+120), float32(y+52), float32(dialogW-140), 36, color.RGBA{20, 20, 20, 255}, false)
+	drawText(dst, g.save.directory, x+130, y+78, color.White)
+
+	drawText(dst, "文件名:", x+20, y+106, color.White)
+	vector.DrawFilledRect(dst, float32(x+120), float32(y+80), float32(dialogW-140), 36, color.RGBA{20, 20, 20, 255}, false)
+	drawText(dst, g.save.filename, x+130, y+106, color.White)
+
+	listTop := y + 130
+	listBottom := y + dialogH - 140
+	vector.DrawFilledRect(dst, float32(x+20), float32(listTop), float32(dialogW-40), float32(listBottom-listTop), color.RGBA{15, 15, 15, 255}, false)
+
+	entryHeight := 28
+	for i, e := range g.save.entries {
+		itemY := listTop + i*entryHeight
+		if itemY+entryHeight > listBottom {
+			break
+		}
+		label := e.name
+		if e.dir {
+			label = "📁 " + e.name
+		} else {
+			label = "📄 " + e.name
+		}
+		drawText(dst, label, x+32, itemY+20, color.White)
+	}
+
+	vector.DrawFilledRect(dst, float32(x+20), float32(y+dialogH-60), 100, 40, color.RGBA{120, 70, 70, 255}, false)
+	vector.DrawFilledRect(dst, float32(x+dialogW-180), float32(y+dialogH-60), 160, 40, color.RGBA{70, 120, 70, 255}, false)
+	drawText(dst, "取消", x+52, y+dialogH-34, color.White)
+	drawText(dst, "保存", x+dialogW-122, y+dialogH-34, color.White)
 }
 
 func distancePointToSegment(p, a, b Vec2) float64 {

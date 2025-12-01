@@ -4,7 +4,6 @@ go 1.22
 
 require (
 	github.com/hajimehoshi/ebiten/v2 v2.6.4
-	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
 	golang.org/x/image v0.12.0
 )
 

@@ -179,6 +179,7 @@ type button struct {
 	rect    image.Rectangle
 	label   string
 	onClick func()
+	pressed bool
 }
 
 func rectContainsPoint(rect image.Rectangle, p image.Point) bool {
@@ -189,9 +190,32 @@ func (b *button) contains(x, y int) bool {
 	return x >= b.rect.Min.X && x <= b.rect.Max.X && y >= b.rect.Min.Y && y <= b.rect.Max.Y
 }
 
+func (b *button) updateState(mx, my int, pressed bool) {
+	b.pressed = pressed && b.contains(mx, my)
+}
+
 func (b *button) draw(dst *ebiten.Image) {
-	vector.DrawFilledRect(dst, float32(b.rect.Min.X), float32(b.rect.Min.Y), float32(b.rect.Dx()), float32(b.rect.Dy()), color.RGBA{70, 70, 70, 255}, false)
-	textY := b.rect.Min.Y + b.rect.Dy()/2 + 6
+	width := float32(b.rect.Dx())
+	height := float32(b.rect.Dy())
+	x := float32(b.rect.Min.X)
+	y := float32(b.rect.Min.Y)
+
+	shadowOffset := float32(3)
+	if b.pressed {
+		shadowOffset = 1
+	}
+
+	vector.DrawFilledRect(dst, x+1, y+shadowOffset, width, height, color.RGBA{40, 40, 40, 255}, false)
+
+	offset := float32(0)
+	fill := color.RGBA{70, 70, 70, 255}
+	if b.pressed {
+		offset = 2
+		fill = color.RGBA{90, 90, 90, 255}
+	}
+
+	vector.DrawFilledRect(dst, x, y+offset, width, height, fill, false)
+	textY := int(y+offset) + b.rect.Dy()/2 + 6
 	drawText(dst, b.label, b.rect.Min.X+12, textY, color.White)
 }
 
@@ -558,6 +582,10 @@ func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPress
 	}
 
 	g.camera.X = 0
+
+	for _, b := range g.buttons {
+		b.updateState(mx, my, leftPressed)
+	}
 
 	for _, s := range g.sliders {
 		s.handleInput(float64(mx), float64(my), leftPressed)

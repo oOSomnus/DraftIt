@@ -387,7 +387,7 @@ func (g *Game) Update() error {
 
 func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPressed, justClicked bool) error {
 
-	if my > uiHeight && rightPressed {
+	if rightPressed {
 		if !g.panning {
 			g.panning = true
 			g.panLast = Vec2{X: float32(mx), Y: float32(my)}
@@ -432,7 +432,7 @@ func (g *Game) handleMainInput(mx, my, viewW, viewH int, leftPressed, rightPress
 	case modePixelErase:
 		g.handleStrokeDrawing(mx, my, leftPressed, g.eraserSize, color.Black)
 	case modeStrokeErase:
-		g.handleStrokeErase(mx, my, justClicked)
+		g.handleStrokeErase(mx, my, leftPressed)
 	}
 
 	g.lastMouseBtn = leftPressed
@@ -532,8 +532,8 @@ func (g *Game) handleStrokeDrawing(mx, my int, pressed bool, size float64, clr c
 	}
 }
 
-func (g *Game) handleStrokeErase(mx, my int, clicked bool) {
-	if !clicked {
+func (g *Game) handleStrokeErase(mx, my int, pressed bool) {
+	if !pressed {
 		return
 	}
 	pos := g.worldFromScreen(mx, my)
